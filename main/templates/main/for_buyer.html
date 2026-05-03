@@ -42,12 +42,13 @@
 
                 <div class="location">
                     <i class="fas fa-location-dot"></i>
-                    <span>{{ seller.distance }} km away . {{ seller.user.sellerlocation.first.location }}</span>
+                    <span>{{ seller.distance }} km away . {{ seller.location }}</span>
                 </div>
 
-                <button class="copy-btn" onclick="copyText('textToCopy-{{ forloop.counter }}'); getHandleId('{{ seller.user.id }}')">
+                <button class="copy-btn" onclick="copyText('textToCopy-{{ forloop.counter }}'); getHandleId('{{ seller.user_id }}')">
                     <i class="fas fa-copy"></i> Copy Handle
                 </button>
+
             </div>
         {% endfor %}
     {% else %}
@@ -58,21 +59,20 @@
 <!-- Pagination controls -->
 <div class="pagination">
     <span class="page-links">
-        {% if sellers.has_previous %}
-            <a href="?query={{ query }}&page=1">First</a>
-            <a href="?query={{ query }}&page={{ sellers.previous_page_number }}">Previous</a>
+        {% if has_previous %}
+            <a href="?{{ page_querystring }}page={{ previous_page_number }}">Previous</a>
         {% endif %}
 
         <span class="current-page">
-            Page {{ sellers.number }} of {{ sellers.paginator.num_pages }}
+            Page {{ page_number }}
         </span>
 
-        {% if sellers.has_next %}
-            <a href="?query={{ query }}&page={{ sellers.next_page_number }}">Next</a>
-            <a href="?query={{ query }}&page={{ sellers.paginator.num_pages }}">Last</a>
+        {% if has_next %}
+            <a href="?{{ page_querystring }}page={{ next_page_number }}">Next</a>
         {% endif %}
     </span>
 </div>
+
 
 <script src="{% static 'main/js/copy_to_clipboard.js' %}"></script>
 <script src="{% static 'main/js/statistics_counts.js' %}"></script>

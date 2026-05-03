@@ -18,89 +18,222 @@ def index(request):
     return render (request, 'main/index.html')
 
 
+import math
+from collections import Counter, defaultdict
+
+from django.db.models import Q, F, Value, FloatField, ExpressionWrapper, Exists, OuterRef, Prefetch
+from django.db.models.functions import Power
+from django.shortcuts import render
+from django.utils import timezone
+
+
+PAGE_SIZE = 5
+SELLER_BATCH_SIZE = 25
+DEFAULT_RADIUS_KM = 50
+MAX_RADIUS_KM = 100
+
+
+def get_bounding_box(latitude, longitude, radius_km):
+    lat_delta = radius_km / 111.0
+    lon_delta = radius_km / (111.0 * max(math.cos(math.radians(latitude)), 0.01))
+
+    return {
+        "min_lat": latitude - lat_delta,
+        "max_lat": latitude + lat_delta,
+        "min_lon": longitude - lon_delta,
+        "max_lon": longitude + lon_delta,
+    }
+
+
 def filter_sellers(request):
-    platform = request.GET.get('platform')
-    location = request.GET.get('location', '').strip()
-    query = request.GET.get('query', '').strip()
+    platform = request.GET.get("platform")
+    location = request.GET.get("location", "").strip()
+    query = request.GET.get("query", "").strip()
 
     try:
-        user_latitude = float(request.GET.get('latitude', 0))
-        user_longitude = float(request.GET.get('longitude', 0))
-    except ValueError:
-        return render(request, 'main/for_buyer.html', {
+        user_latitude = float(request.GET.get("latitude"))
+        user_longitude = float(request.GET.get("longitude"))
+    except (TypeError, ValueError):
+        return render(request, "main/for_buyer.html", {
             "sellers": [],
             "query": query,
-            "error": "Invalid location data."
+            "error": "Invalid location data.",
         })
 
+    try:
+        radius_km = float(request.GET.get("radius", DEFAULT_RADIUS_KM))
+    except ValueError:
+        radius_km = DEFAULT_RADIUS_KM
+
+    radius_km = min(max(radius_km, 1), MAX_RADIUS_KM)
+
+    try:
+        page_number = max(int(request.GET.get("page", 1)), 1)
+    except ValueError:
+        page_number = 1
+
+    terms = set()
+    if query:
+        terms = {query, f"{query}s", query.rstrip("s")}
+        terms.discard("")
+
+    product_filter = Q()
+    social_product_filter = Q()
+
+    for term in terms:
+        product_filter |= (
+            Q(product_name__icontains=term) |
+            Q(product_descriptions__icontains=term)
+        )
+        social_product_filter |= (
+            Q(product_infos__product_name__icontains=term) |
+            Q(product_infos__product_descriptions__icontains=term)
+        )
+
+    product_qs = ProductInfo.objects.select_related("business_profile").only(
+        "id",
+        "product_name",
+        "product_descriptions",
+        "business_profile",
+        "business_profile__product_category",
+    )
+
+    if terms:
+        product_qs = product_qs.filter(product_filter)
+
+    social_qs = SocialInfo.objects.only(
+        "id",
+        "user_id",
+        "handle",
+        "social_category",
+    )
+
+    matching_socials = SocialInfo.objects.filter(user_id=OuterRef("user_id"))
+
+    if platform and platform != "all":
+        social_qs = social_qs.filter(social_category__iexact=platform)
+        matching_socials = matching_socials.filter(social_category__iexact=platform)
+
+    if terms:
+        social_qs = social_qs.filter(social_product_filter).distinct()
+        matching_socials = matching_socials.filter(social_product_filter)
+    else:
+        social_qs = social_qs.filter(product_infos__isnull=False).distinct()
+        matching_socials = matching_socials.filter(product_infos__isnull=False)
+
+    social_qs = social_qs.prefetch_related(
+        Prefetch("product_infos", queryset=product_qs, to_attr="matched_products")
+    )
+
+    bbox = get_bounding_box(user_latitude, user_longitude, radius_km)
+
+    seller_qs = SellerLocation.objects.only(
+        "id",
+        "user_id",
+        "latitude",
+        "longitude",
+        "location",
+    )
+
+    if location:
+        seller_qs = seller_qs.filter(location__icontains=location)
+
+    distance_score = ExpressionWrapper(
+        Power(F("latitude") - Value(user_latitude), Value(2.0)) +
+        Power((F("longitude") - Value(user_longitude)) * Value(math.cos(math.radians(user_latitude))), Value(2.0)),
+        output_field=FloatField(),
+    )
+
+    seller_qs = seller_qs.annotate(
+        has_matching_social=Exists(matching_socials),
+        distance_score=distance_score,
+    ).filter(
+        has_matching_social=True,
+    ).order_by("distance_score", "id").filter(
+    latitude__gte=bbox["min_lat"],
+    latitude__lte=bbox["max_lat"],
+    longitude__gte=bbox["min_lon"],
+    longitude__lte=bbox["max_lon"],
+)
+
+
+    needed_results = page_number * PAGE_SIZE + PAGE_SIZE
     flattened_sellers = []
+    offset = 0
 
-    all_seller_locations = SellerLocation.objects.select_related('user').all()
+    while len(flattened_sellers) < needed_results:
+        seller_batch = list(seller_qs[offset:offset + SELLER_BATCH_SIZE])
 
-    for seller in all_seller_locations:
-        try:
-            seller_lat = float(seller.latitude)
-            seller_lon = float(seller.longitude)
-            distance = vincenty_distance(user_latitude, user_longitude, seller_lat, seller_lon)
+        if not seller_batch:
+            break
 
-            # Get all social handles for the seller
-            all_socials = SocialInfo.objects.filter(user=seller.user)
+        user_ids = [seller.user_id for seller in seller_batch]
+        socials_by_user = defaultdict(list)
 
-            if platform and platform != "all":
-                all_socials = all_socials.filter(social_category__iexact=platform)
+        for social in social_qs.filter(user_id__in=user_ids):
+            socials_by_user[social.user_id].append(social)
 
-            for social in all_socials:
-                linked_products = social.product_infos.all()
+        for seller in seller_batch:
+            try:
+                seller_latitude = float(seller.latitude)
+                seller_longitude = float(seller.longitude)
+            except ValueError:
+                continue
 
-                # Filter products by query
-                if query:
-                    # linked_products = linked_products.filter(
-                    #     Q(product_name__icontains=query) |
-                    #     Q(product_descriptions__icontains=query)
-                    # )
-                    query_plural = query + 's'
-                    query_singular = query.rstrip('s')
+            distance = vincenty_distance(
+                user_latitude,
+                user_longitude,
+                seller_latitude,
+                seller_longitude,
+            )
 
-                    linked_products = linked_products.filter(
-                        Q(product_name__icontains=query) |
-                        Q(product_name__icontains=query_plural) |
-                        Q(product_name__icontains=query_singular) |
-                        Q(product_descriptions__icontains=query) |
-                        Q(product_descriptions__icontains=query_plural) |
-                        Q(product_descriptions__icontains=query_singular)
-                    )
-
-                for product in linked_products:
-                    # Location filter
-                    if location and location.lower() not in seller.location.lower():
-                        continue
-
-                    # Track stats
-                    today = date.today()
-                    stat, _ = Statistic.objects.get_or_create(user=seller.user, date_time=today)
-                    Statistic.objects.filter(id=stat.id).update(appearence_count=F('appearence_count') + 1)
-
+            for social in socials_by_user.get(seller.user_id, []):
+                for product in social.matched_products:
                     flattened_sellers.append({
-                        "user": seller.user,
+                        "user_id": seller.user_id,
                         "distance": round(distance, 2),
+                        "location": seller.location,
                         "product_info": product,
-                        "social": social
+                        "social": social,
                     })
 
-        except ValueError:
-            continue
+        offset += SELLER_BATCH_SIZE
 
-    # Sort by distance
-    flattened_sellers = sorted(flattened_sellers, key=lambda x: x["distance"])
+    flattened_sellers.sort(key=lambda item: item["distance"])
 
-    # Paginate
-    paginator = Paginator(flattened_sellers, 5)
-    page_number = request.GET.get('page')
-    page_obj = paginator.get_page(page_number)
+    start = (page_number - 1) * PAGE_SIZE
+    end = start + PAGE_SIZE
+    page_items = flattened_sellers[start:end]
 
-    return render(request, 'main/for_buyer.html', {
-        "sellers": page_obj,
+    appearance_counts = Counter(item["user_id"] for item in page_items)
+    today = timezone.localdate()
+
+    for user_id, count in appearance_counts.items():
+        stat, _ = Statistic.objects.get_or_create(
+            user_id=user_id,
+            date_time=today,
+            defaults={"appearence_count": 0},
+        )
+        Statistic.objects.filter(id=stat.id).update(
+            appearence_count=F("appearence_count") + count
+        )
+
+    page_querystring = request.GET.copy()
+    page_querystring.pop("page", None)
+    page_querystring = page_querystring.urlencode()
+
+    if page_querystring:
+        page_querystring += "&"
+
+    return render(request, "main/for_buyer.html", {
+        "sellers": page_items,
         "query": query,
+        "page_number": page_number,
+        "previous_page_number": page_number - 1,
+        "next_page_number": page_number + 1,
+        "has_previous": page_number > 1,
+        "has_next": len(flattened_sellers) > end,
+        "page_querystring": page_querystring,
     })
 
 

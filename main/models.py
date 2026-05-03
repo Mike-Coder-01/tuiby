@@ -50,8 +50,8 @@ class SocialInfo(models.Model):
     
 class SellerLocation(models.Model):
     user = models.ForeignKey(CustomUser, on_delete=models.CASCADE, related_name='sellerlocation')
-    latitude = models.CharField(max_length=50)
-    longitude = models.CharField(max_length=50)
+    latitude = models.FloatField(db_index=True)
+    longitude = models.FloatField(db_index=True)
     location = models.CharField(max_length=100, default='Dar es salaam')
 
     def __str__(self):
@@ -66,6 +66,12 @@ class Statistic(models.Model):
 
     class Meta:
         ordering = ['-date_time']
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "date_time"],
+                name="unique_user_stat_per_day",
+            )
+        ]
 
     def __str__(self):
         return f"{self.user.full_name} - {self.date_time}"
