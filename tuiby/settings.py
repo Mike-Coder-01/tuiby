@@ -87,19 +87,16 @@ import os
 
 # DATABASE
 # Check if running on Railway (PGHOST is automatically set)
-if 'PGHOST' in os.environ:
+if not DEBUG:
     DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.postgresql',
-            'NAME': os.environ['PGDATABASE'],
-            'USER': os.environ['PGUSER'],
-            'PASSWORD': os.environ['PGPASSWORD'],
-            'HOST': os.environ['PGHOST'],
-            'PORT': os.environ.get('PGPORT', '5432'),
-        }
+        'default': dj_database_url.config(
+            default='postgresql://postgres:postgres@localhost:5432/mysite',
+            conn_max_age=600
+        )
     }
+
 else:
-    # Local development fallback
+    #Local development fallback
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -123,15 +120,19 @@ USE_TZ = True
 
 # STATIC FILES (FIXED - NO RECURSION ISSUE)
 STATIC_URL = '/static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_DIRS = [BASE_DIR / 'static']
-
-# SAFE WhiteNoise storage (avoids collectstatic recursion crash)
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 # MEDIA FILES
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+if not DEBUG:
+    STATIC_ROOT = BASE_DIR / 'staticfiles'
+
+    # SAFE WhiteNoise storage (avoids collectstatic recursion crash)
+    STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
+
+
 
 # CUSTOM USER
 AUTH_USER_MODEL = 'accounts.CustomUser'
