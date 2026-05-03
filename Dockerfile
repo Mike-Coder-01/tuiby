@@ -26,4 +26,5 @@ RUN python manage.py collectstatic --noinput
 
 EXPOSE 8000
 
-CMD ["gunicorn","--bind",":8000","--workers","2","tuiby.wsgi"]
+# Let Gunicorn use Railway's defaults (0.0.0.0 and PORT env var)
+CMD ["gunicorn", "tuiby.wsgi:application"]
