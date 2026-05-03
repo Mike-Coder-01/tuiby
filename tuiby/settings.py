@@ -22,17 +22,14 @@ SECRET_KEY = env('SECRET_KEY', default=get_random_secret_key())
 DEBUG = env.bool('DEBUG', default=False)
 
 ALLOWED_HOSTS = [
-    'localhost',
-    '127.0.0.1',
-    'www.tuiby.com',
-    '.railway.app',
-    '.fly.dev',
+    '*'
 ]
 
 CSRF_TRUSTED_ORIGINS = [
     'https://tuiby.fly.dev',
     'https://www.tuiby.com',
     'https://*.railway.app',
+    'https://*.up.railway.app',
 ]
 
 # APPLICATIONS
@@ -86,11 +83,29 @@ TEMPLATES = [
 WSGI_APPLICATION = 'tuiby.wsgi.application'
 
 # DATABASE
-DATABASES = {
-    'default': dj_database_url.parse(
-        env('DATABASE_URL', default='sqlite:///db.sqlite3')
-    )
-}
+import os
+
+# DATABASE
+# Check if running on Railway (PGHOST is automatically set)
+if 'PGHOST' in os.environ:
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ['PGDATABASE'],
+            'USER': os.environ['PGUSER'],
+            'PASSWORD': os.environ['PGPASSWORD'],
+            'HOST': os.environ['PGHOST'],
+            'PORT': os.environ.get('PGPORT', '5432'),
+        }
+    }
+else:
+    # Local development fallback
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 # PASSWORD VALIDATION
 AUTH_PASSWORD_VALIDATORS = [
